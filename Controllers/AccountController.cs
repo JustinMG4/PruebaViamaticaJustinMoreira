@@ -9,12 +9,12 @@ namespace PruebaViamaticaJustinMoreira.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
-    public class AuthController : ControllerBase
+    public class AccountController : ControllerBase
     {
-        private readonly IAuthService _authService;
-        private readonly ILogger<AuthController> _logger;
+        private readonly IAccountService _authService;
+        private readonly ILogger<AccountController> _logger;
 
-        public AuthController(IAuthService authService, ILogger<AuthController> logger)
+        public AccountController(IAccountService authService, ILogger<AccountController> logger)
         {
             _authService = authService;
             _logger = logger;
@@ -28,7 +28,7 @@ namespace PruebaViamaticaJustinMoreira.Controllers
         {
             _logger.LogInformation("Iniciando registro de usuario: {Email}", registerDto.Email);
 
-            var result = await _authService.RegisterAsync(registerDto);
+            var result = await _authService.RegisterAsync(registerDto, "User");
 
             if (result.Succeeded)
             {
@@ -41,6 +41,36 @@ namespace PruebaViamaticaJustinMoreira.Controllers
 
             var errors = result.Errors.Select(e => e.Description).ToList();
             _logger.LogWarning("Error en registro de usuario {Email}: {Errors}", registerDto.Email, string.Join(", ", errors));
+
+            return BadRequest(ApiResponse<object>.ErrorResponse(
+                "Error en el registro",
+                errors
+            ));
+        }
+
+        /// <summary>
+        /// Registrar nuevo usuario
+        /// </summary>
+        [HttpPost("register-admin")]
+        [Authorize(Roles = "Admin")]
+
+        public async Task<ActionResult<ApiResponse<object>>> RegisterAdmin([FromBody] RegisterDto registerDto)
+        {
+            _logger.LogInformation("Iniciando registro de Admin: {Email}", registerDto.Email);
+
+            var result = await _authService.RegisterAsync(registerDto, "Admin");
+
+            if (result.Succeeded)
+            {
+                _logger.LogInformation("Usuario Admin registrado exitosamente: {Email}", registerDto.Email);
+                return Ok(ApiResponse<object>.SuccessResponse(
+                    new { message = "Usuario Administrador registrado exitosamente" },
+                    "Registro completado"
+                ));
+            }
+
+            var errors = result.Errors.Select(e => e.Description).ToList();
+            _logger.LogWarning("Error en registro de usuario administrador {Email}: {Errors}", registerDto.Email, string.Join(", ", errors));
 
             return BadRequest(ApiResponse<object>.ErrorResponse(
                 "Error en el registro",
@@ -208,6 +238,41 @@ namespace PruebaViamaticaJustinMoreira.Controllers
             var result = await _authService.ResetPassword(request);
 
             _logger.LogInformation("Contraseña restablecida exitosamente para: {Email}", request.Email);
+
+            return Ok(result);
+        }
+
+        /// <summary>
+        /// Actualizar información básica del usuario
+        /// </summary>
+        [HttpPut("me/update")]
+        [Authorize]
+        public async Task<ActionResult<ApiResponse<object>>> UpdateUser([FromBody] UpdateUserDto updateDto)
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            
+            _logger.LogInformation("Usuario {CurrentUserId} actualizando información de usuario {UserId}", userId, userId);
+
+            var result = await _authService.UpdateUserAsync(userId, updateDto);
+
+            _logger.LogInformation("Usuario {UserId} actualizado exitosamente", userId);
+
+            return Ok(result);
+        }
+
+        /// <summary>
+        /// Actualizar información básica del usuario
+        /// </summary>
+        [HttpPut("update")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<ApiResponse<object>>> UpdateUsers(string userId,[FromBody] UpdateUserDto updateDto)
+        {
+            
+            _logger.LogInformation("Usuario {CurrentUserId} actualizando información de usuario {UserId}", userId, userId);
+
+            var result = await _authService.UpdateUserAsync(userId, updateDto);
+
+            _logger.LogInformation("Usuario {UserId} actualizado exitosamente", userId);
 
             return Ok(result);
         }

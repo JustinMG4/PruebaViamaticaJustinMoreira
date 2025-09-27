@@ -4,9 +4,9 @@ using PruebaViamaticaJustinMoreira.Models;
 
 namespace PruebaViamaticaJustinMoreira.Interfaces
 {
-    public interface IAuthService
+    public interface IAccountService
     {
-        Task<IdentityResult> RegisterAsync(RegisterDto registerDto);
+        Task<IdentityResult> RegisterAsync(RegisterDto registerDto, string role);
         Task<string> LoginAsync(LoginDto loginDto);
         Task<bool> LogoutAsync(string userId);
         Task<User> GetUserByIdAsync(string userId);
@@ -18,5 +18,6 @@ namespace PruebaViamaticaJustinMoreira.Interfaces
         Task<bool> UnlockUserAsync(string userId);
         Task<ApiResponse<string>> ResetPassword(ResetPassword request);
         Task<ApiResponse<string>> ForgotPassword(string email);
+        Task<ApiResponse<object>> UpdateUserAsync(string userId, UpdateUserDto updateDto);
     }
 }
