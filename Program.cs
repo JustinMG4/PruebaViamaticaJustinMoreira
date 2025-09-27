@@ -74,12 +74,28 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
+var myAllowSpecificOrigins = "_myAllowSpecificOrigins";
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(name: myAllowSpecificOrigins,
+                      policy =>
+                      {
+                          // Aquí pones el origen de tu app de Angular
+                          policy.WithOrigins("http://localhost:4200")
+                                .AllowAnyHeader()
+                                .AllowAnyMethod();
+                      });
+});
+
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 builder.Services.AddScoped<IAccountService, AccountService>();
 builder.Services.AddScoped<ISessionService, SessionService>();
+builder.Services.AddScoped<IPersonService, PersonService>();
 
 builder.Services.AddScoped<UserManager<User>>();
 builder.Services.AddScoped<RoleManager<IdentityRole>>();
@@ -166,6 +182,8 @@ else
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
 }
+
+app.UseCors(myAllowSpecificOrigins);
 
 app.UseHttpsRedirection();
 app.UseStaticFiles();

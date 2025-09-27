@@ -21,17 +21,14 @@ namespace PruebaViamaticaJustinMoreira.Services
 
         public async Task<SessionStatsDto> GetSessionStatisticsAsync()
         {
-            // Obtener la sesión más reciente por cada usuario
             var latestSessionsPerUser = await _context.Sessions
                 .GroupBy(s => s.UserId)
                 .Select(g => g.OrderByDescending(s => s.StartDate).First())
                 .ToListAsync();
 
-            // Contar sesiones activas e inactivas basándose en la sesión más reciente de cada usuario
             var activeSessions = latestSessionsPerUser.Count(s => s.LogoutDate == null);
             var inactiveSessions = latestSessionsPerUser.Count(s => s.LogoutDate != null);
 
-            // Obtener usuarios bloqueados
             var allUsers = await _userManager.Users.ToListAsync();
             var lockedUsersCount = 0;
 
@@ -57,13 +54,12 @@ namespace PruebaViamaticaJustinMoreira.Services
             if (string.IsNullOrWhiteSpace(userId))
                 throw new ValidationException("El identificador de usuario es requerido.");
 
-            // Buscar la sesión más reciente del usuario que tenga tanto StartDate como LogoutDate
             var lastActiveSession = await _context.Sessions
                 .Where(s => s.UserId == userId && s.LogoutDate != null)
                 .OrderByDescending(s => s.StartDate)
                 .FirstOrDefaultAsync();
 
-            if (lastActiveSession==null)
+            if (lastActiveSession == null)
                 throw new NotFoundException("No se encontró ninguna sesión activa para el usuario especificado.");
 
             return new UserSessionStats
@@ -77,24 +73,57 @@ namespace PruebaViamaticaJustinMoreira.Services
 
         public async Task<List<UserFailedAttemptsDto>> GetUsersWithFailedAttemptsAsync()
         {
-            // Obtener usuarios con intentos fallidos directamente usando EF Core
-            var usersWithFailedAttempts = await _context.Users
-                .Where(u => u.AccessFailedCount > 0)
+            var users = await _context.Users
                 .Include(u => u.Persons)
-                .Select(u => new UserFailedAttemptsDto
-                {
-                    UserId = u.Id,
-                    UserName = u.UserName,
-                    Email = u.Email,
-                    AccessFailedCount = u.AccessFailedCount,
-                    FullName = u.Persons.Any()
-                        ? u.Persons.First().Name + " " + u.Persons.First().LastName
-                        : "Sin información personal"
-                })
-                .OrderByDescending(u => u.AccessFailedCount)
+                .Where(u => u.AccessFailedCount > 0 || u.LockoutEnd != null)
                 .ToListAsync();
 
-            return usersWithFailedAttempts;
+            var result = new List<UserFailedAttemptsDto>();
+
+            foreach (var user in users)
+            {
+                bool isLockedOut = await _userManager.IsLockedOutAsync(user);
+
+                if (user.AccessFailedCount > 0 || isLockedOut)
+                {
+                    result.Add(new UserFailedAttemptsDto
+                    {
+                        UserId = user.Id,
+                        UserName = user.UserName,
+                        Email = user.Email,
+                        AccessFailedCount = user.AccessFailedCount,
+                        FullName = user.Persons.Any()
+                            ? user.Persons.First().Name + " " + user.Persons.First().LastName
+                            : "Sin información personal"
+                    });
+                }
+            }
+
+            return result.OrderByDescending(u => u.AccessFailedCount).ToList();
+        }
+
+        public async Task<List<SessionHistoryDto>> GetUserSessionHistoryAsync(string userId)
+        {
+            if (string.IsNullOrWhiteSpace(userId))
+                throw new ValidationException("El identificador de usuario es requerido.");
+
+            var userExists = await _userManager.FindByIdAsync(userId);
+            if (userExists == null)
+                throw new NotFoundException("Usuario no encontrado.");
+
+            var sessionHistory = await _context.Sessions
+                .Where(s => s.UserId == userId)
+                .OrderByDescending(s => s.StartDate)
+                .Select(s => new SessionHistoryDto
+                {
+                    SessionId = s.SessionId,
+                    StartDate = s.StartDate,
+                    LogoutDate = s.LogoutDate,
+                    Intents = s.Intents
+                })
+                .ToListAsync();
+
+            return sessionHistory;
         }
     }
 }

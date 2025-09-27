@@ -274,7 +274,7 @@ namespace PruebaViamaticaJustinMoreira.Migrations
                         .HasMaxLength(5)
                         .HasColumnType("nvarchar(5)");
 
-                    b.Property<string>("Email")
+                    b.Property<string>("EmailOrUsername")
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
 

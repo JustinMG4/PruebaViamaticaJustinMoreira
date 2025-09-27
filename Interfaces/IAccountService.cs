@@ -17,7 +17,9 @@ namespace PruebaViamaticaJustinMoreira.Interfaces
         Task<int> GetFailedAttemptsAsync(string userId);
         Task<bool> UnlockUserAsync(string userId);
         Task<ApiResponse<string>> ResetPassword(ResetPassword request);
-        Task<ApiResponse<string>> ForgotPassword(string email);
+        Task<ApiResponse<string>> ForgotPassword(ForgotPasswordDto dto);
         Task<ApiResponse<object>> UpdateUserAsync(string userId, UpdateUserDto updateDto);
+        Task<bool> LockedAccountAsync(string userId, int minutes);
+        Task<BulkRegisterResultDto> RegisterBulkAsync(List<RegisterDto> usersToRegister, string role);
     }
 }

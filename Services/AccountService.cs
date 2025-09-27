@@ -35,12 +35,83 @@ namespace PruebaViamaticaJustinMoreira.Services
             _env = env;
         }
 
+        public async Task<BulkRegisterResultDto> RegisterBulkAsync(List<RegisterDto> usersToRegister, string role)
+        {
+            var resultSummary = new BulkRegisterResultDto();
+
+            // Iniciar una única transacción para todo el lote
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                foreach (var registerDto in usersToRegister)
+                {
+                    try
+                    {
+                        await ValidateRegisterDataAsync(registerDto);
+
+                        var user = new User
+                        {
+                            UserName = registerDto.UserName,
+                            Email = registerDto.Email,
+                            EmailConfirmed = true,
+                            DateOfRegister = DateTime.UtcNow
+                        };
+
+                        var result = await _userManager.CreateAsync(user, registerDto.Password);
+                        if (!result.Succeeded)
+                        {
+                            resultSummary.FailedRegisters++;
+                            resultSummary.Errors.AddRange(result.Errors.Select(e => $"Usuario '{registerDto.UserName}': {e.Description}"));
+                            continue;
+                        }
+
+                        var roleResult = await _userManager.AddToRoleAsync(user, role);
+                        if (!roleResult.Succeeded)
+                        {
+                            resultSummary.FailedRegisters++;
+                            resultSummary.Errors.AddRange(roleResult.Errors.Select(e => $"Usuario '{registerDto.UserName}': {e.Description}"));
+                            continue;
+                        }
+
+                        // Crear persona asociada
+                        var persona = new Person
+                        {
+                            IdPerson = $"USR-{DateTime.Now:yyyyMMdd}-{user.Id[..8]}",
+                            Name = registerDto.Name,
+                            LastName = registerDto.LastName,
+                            Identification = registerDto.Identification,
+                            BirthDate = registerDto.BirthDate,
+                            UserId = user.Id
+                        };
+
+                        _context.Persons.Add(persona);
+
+                        resultSummary.SuccessfulRegisters++;
+                    }
+                    catch (Exception ex)
+                    {
+                        resultSummary.FailedRegisters++;
+                        resultSummary.Errors.Add($"Usuario '{registerDto.UserName}': {ex.Message}");
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                throw new Exception("Ocurrió un error catastrófico durante la carga masiva. Se revirtieron todos los cambios.", ex);
+            }
+
+            return resultSummary;
+        }
+
         public async Task<IdentityResult> RegisterAsync(RegisterDto registerDto, string role)
         {
-            // Aplicar todas las validaciones antes de crear el usuario
             await ValidateRegisterDataAsync(registerDto);
 
-            // Iniciar transacción para asegurar atomicidad
             using var transaction = await _context.Database.BeginTransactionAsync();
 
             try
@@ -68,7 +139,6 @@ namespace PruebaViamaticaJustinMoreira.Services
                     return roleResult;
                 }
 
-                // Crear persona asociada
                 var persona = new Person
                 {
                     IdPerson = $"USR-{DateTime.Now:yyyyMMdd}-{user.Id[..8]}",
@@ -88,107 +158,101 @@ namespace PruebaViamaticaJustinMoreira.Services
             }
             catch (Exception)
             {
-                // En caso de error, hacer rollback
                 await transaction.RollbackAsync();
                 throw;
             }
         }
 
         public async Task<string> LoginAsync(LoginDto loginDto)
+{
+    // Validaciones de entrada
+    if (string.IsNullOrEmpty(loginDto.EmailOrUsername) || string.IsNullOrEmpty(loginDto.Password))
+        throw new ValidationException("Email/Usuario y contraseña son requeridos");
+
+    // Buscar usuario por email o username
+    var user = await FindUserByEmailOrUsernameAsync(loginDto.EmailOrUsername);
+    if (user == null)
+        throw new UnauthorizedException("Credenciales inválidas");
+
+    // Requerimiento I: Un usuario solo puede tener 1 sesión activa
+    var activeSession = await _context.Sessions
+        .FirstOrDefaultAsync(s => s.UserId == user.Id && s.LogoutDate == null);
+
+    if (activeSession != null)
+        throw new BusinessException("Ya existe una sesión activa para este usuario");
+
+    // Verificar si el usuario está bloqueado
+    if (await _userManager.IsLockedOutAsync(user))
+    {
+        var lockoutEnd = await _userManager.GetLockoutEndDateAsync(user);
+        throw new UnauthorizedException($"Usuario bloqueado hasta: {lockoutEnd}");
+    }
+
+    var currentFailedAttempts = await _userManager.GetAccessFailedCountAsync(user);
+
+    // Requerimiento IV: Bloqueo después de 3 intentos fallidos
+    var result = await _signInManager.CheckPasswordSignInAsync(user, loginDto.Password, lockoutOnFailure: true);
+
+    if (result.IsLockedOut)
+    {
+        throw new UnauthorizedException("Usuario bloqueado después de múltiples intentos fallidos. Intente más tarde.");
+    }
+
+    if (!result.Succeeded)
+    {
+        var failedAttempts = await _userManager.GetAccessFailedCountAsync(user);
+        var remainingAttempts = 3 - failedAttempts;
+
+        if (remainingAttempts > 0)
+            throw new UnauthorizedException($"Credenciales inválidas. Le quedan {remainingAttempts} intentos");
+        else
+            throw new UnauthorizedException("Credenciales inválidas");
+    }
+
+    using var transaction = await _context.Database.BeginTransactionAsync();
+
+    try
+    {
+        // Requerimiento II: Registrar inicio de sesión
+        var session = new Session
         {
-            // Validaciones de entrada
-            if (string.IsNullOrEmpty(loginDto.Email) || string.IsNullOrEmpty(loginDto.Password))
-                throw new ValidationException("Email y contraseña son requeridos");
+            UserId = user.Id,
+            StartDate = DateTime.UtcNow,
+            Intents = currentFailedAttempts
+        };
 
-            var user = await _userManager.FindByEmailAsync(loginDto.Email);
-            if (user == null)
-                throw new UnauthorizedException("Credenciales inválidas");
+        _context.Sessions.Add(session);
 
-            // Requerimiento I: Un usuario solo puede tener 1 sesión activa
-            var activeSession = await _context.Sessions
-                .FirstOrDefaultAsync(s => s.UserId == user.Id && s.LogoutDate == null);
+        // Cerrar cualquier sesión que pudiera haber quedado abierta (por seguridad)
+        var openSessions = await _context.Sessions
+            .Where(s => s.UserId == user.Id && s.LogoutDate == null && s.SessionId != session.SessionId)
+            .ToListAsync();
 
-            if (activeSession != null)
-                throw new BusinessException("Ya existe una sesión activa para este usuario");
-
-            // Verificar si el usuario está bloqueado
-            if (await _userManager.IsLockedOutAsync(user))
-            {
-                var lockoutEnd = await _userManager.GetLockoutEndDateAsync(user);
-                throw new UnauthorizedException($"Usuario bloqueado hasta: {lockoutEnd}");
-            }
-
-            // IMPORTANTE: Obtener los intentos fallidos ANTES de verificar la contraseña
-            var currentFailedAttempts = await _userManager.GetAccessFailedCountAsync(user);
-
-            // Requerimiento IV: Bloqueo después de 3 intentos fallidos
-            var result = await _signInManager.CheckPasswordSignInAsync(user, loginDto.Password, lockoutOnFailure: true);
-
-            if (result.IsLockedOut)
-            {
-                throw new UnauthorizedException("Usuario bloqueado después de múltiples intentos fallidos. Intente más tarde.");
-            }
-
-            if (!result.Succeeded)
-            {
-                var failedAttempts = await _userManager.GetAccessFailedCountAsync(user);
-                var remainingAttempts = 3 - failedAttempts;
-
-                if (remainingAttempts > 0)
-                    throw new UnauthorizedException($"Credenciales inválidas. Le quedan {remainingAttempts} intentos");
-                else
-                    throw new UnauthorizedException("Credenciales inválidas");
-            }
-
-            // Iniciar transacción para garantizar atomicidad
-            using var transaction = await _context.Database.BeginTransactionAsync();
-
-            try
-            {
-                // Requerimiento II: Registrar inicio de sesión
-                var session = new Session
-                {
-                    UserId = user.Id,
-                    StartDate = DateTime.UtcNow,
-                    Intents = currentFailedAttempts // Usar la variable capturada ANTES de la verificación
-                };
-
-                _context.Sessions.Add(session);
-
-                // Cerrar cualquier sesión que pudiera haber quedado abierta (por seguridad)
-                var openSessions = await _context.Sessions
-                    .Where(s => s.UserId == user.Id && s.LogoutDate == null && s.SessionId != session.SessionId)
-                    .ToListAsync();
-
-                foreach (var openSession in openSessions)
-                {
-                    openSession.LogoutDate = DateTime.UtcNow;
-                }
-
-                // Guardar cambios en la base de datos (sesiones)
-                await _context.SaveChangesAsync();
-
-                // Resetear contador de intentos fallidos tras login exitoso
-                var resetResult = await _userManager.ResetAccessFailedCountAsync(user);
-                if (!resetResult.Succeeded)
-                {
-                    await transaction.RollbackAsync();
-                    throw new BusinessException("Error al resetear el contador de intentos fallidos");
-                }
-
-                // Si todo sale bien, confirmar la transacción
-                await transaction.CommitAsync();
-
-                // Generar JWT token (fuera de la transacción ya que no afecta la BD)
-                return await GenerateJwtToken(user);
-            }
-            catch (Exception)
-            {
-                // En caso de error, hacer rollback
-                await transaction.RollbackAsync();
-                throw new BusinessException("Error interno durante el proceso de autenticación");
-            }
+        foreach (var openSession in openSessions)
+        {
+            openSession.LogoutDate = DateTime.UtcNow;
         }
+
+        await _context.SaveChangesAsync();
+
+        var resetResult = await _userManager.ResetAccessFailedCountAsync(user);
+        if (!resetResult.Succeeded)
+        {
+            await transaction.RollbackAsync();
+            throw new BusinessException("Error al resetear el contador de intentos fallidos");
+        }
+
+        await transaction.CommitAsync();
+
+        return await GenerateJwtToken(user);
+    }
+    catch (Exception)
+    {
+        // En caso de error, hacer rollback
+        await transaction.RollbackAsync();
+        throw new BusinessException("Error interno durante el proceso de autenticación");
+    }
+}
 
         public async Task<bool> LogoutAsync(string userId)
         {
@@ -204,6 +268,7 @@ namespace PruebaViamaticaJustinMoreira.Services
 
             return false;
         }
+
 
         public async Task<User> GetUserByIdAsync(string userId)
         {
@@ -309,6 +374,16 @@ namespace PruebaViamaticaJustinMoreira.Services
             return result.Succeeded;
         }
 
+
+        public async Task<bool> LockedAccountAsync(string userId, int minutes)
+        {
+            var user = await _userManager.FindByIdAsync(userId);
+            if (user == null) return false;
+            var lockoutEnd = DateTimeOffset.UtcNow.AddMinutes(minutes);
+            var result = await _userManager.SetLockoutEndDateAsync(user, lockoutEnd);
+            return result.Succeeded;
+        }
+
         public async Task<ApiResponse<string>> ResetPassword(ResetPassword request)
         {
             var user = _userManager.Users.FirstOrDefault(x => x.Email == request.Email)
@@ -325,9 +400,9 @@ namespace PruebaViamaticaJustinMoreira.Services
             return ApiResponse<string>.SuccessResponse($"Contraseña actualizada correctamente para el usuario: {user.UserName}");
         }
 
-        public async Task<ApiResponse<string>> ForgotPassword(string email)
+        public async Task<ApiResponse<string>> ForgotPassword(ForgotPasswordDto dto)
         {
-            var user = await _userManager.FindByEmailAsync(email);
+            var user = await _userManager.FindByEmailAsync(dto.email);
             if (user == null)
                 throw new BusinessException("No existe una cuenta registrada con ese mail electrónico.");
 
@@ -341,7 +416,7 @@ namespace PruebaViamaticaJustinMoreira.Services
 
             string content = await File.ReadAllTextAsync(path);
 
-            string resetUrlForm = $"https://localhost:7228/api/Auth/ResetPasswordForm?email={email}&token={encodedToken}";
+            string resetUrlForm = $"https://localhost:7228/api/Account/ResetPasswordForm?email={dto.email}&token={encodedToken}";
 
             string bodyHtml = content
                 .Replace("{{userName}}", user.UserName)
@@ -373,12 +448,13 @@ namespace PruebaViamaticaJustinMoreira.Services
 
             // Validar identificación
             ValidateIdentification(registerDto.Identification);
-            var existingUser = await _userManager.FindByNameAsync(registerDto.Email);
+
+            var existingUser = await _userManager.FindByEmailAsync(registerDto.Email);
             if (existingUser != null)
                 throw new ValidationException("El correo del usuario ya está en uso.");
 
             var existingPerson = await _context.Persons.FirstOrDefaultAsync(p => p.Identification == registerDto.Identification);
-            if (existingUser != null)
+            if (existingPerson != null)
                 throw new ValidationException("La persona con el numero de identificacion proporcionado ya existe.");
         }
 
@@ -496,7 +572,6 @@ namespace PruebaViamaticaJustinMoreira.Services
             {
                 var updatedFields = await ApplyUpdatesAsync(user, person, updateDto);
 
-                // Si no hay cambios reales, retornar sin hacer nada
                 if (updatedFields.Count == 0)
                 {
                     await transaction.RollbackAsync();
@@ -552,7 +627,7 @@ namespace PruebaViamaticaJustinMoreira.Services
             if (!string.IsNullOrWhiteSpace(updateDto.Email) && updateDto.Email != user.Email)
             {
                 user.Email = updateDto.Email;
-                updatedFields.Add("Email");
+                updatedFields.Add("EmailOrUsername");
             }
 
             // Actualizar Name en Person si es diferente
@@ -567,7 +642,6 @@ namespace PruebaViamaticaJustinMoreira.Services
 
         private async Task SaveUpdatesAsync(User user)
         {
-            // Guardar cambios del usuario (Identity)
             var userResult = await _userManager.UpdateAsync(user);
             if (!userResult.Succeeded)
             {
@@ -575,7 +649,6 @@ namespace PruebaViamaticaJustinMoreira.Services
                 throw new BusinessException($"Error al actualizar usuario: {string.Join(", ", errors)}");
             }
 
-            // Guardar cambios en Person (EF Core)
             await _context.SaveChangesAsync();
         }
 
@@ -641,7 +714,6 @@ namespace PruebaViamaticaJustinMoreira.Services
                 }
             }
 
-            // Si hay errores de validación, lanzar excepción con todos los errores
             if (validationErrors.Count > 0)
             {
                 throw new ValidationException(validationErrors);
@@ -653,10 +725,8 @@ namespace PruebaViamaticaJustinMoreira.Services
             if (string.IsNullOrWhiteSpace(userName))
                 throw new ValidationException("El nombre de usuario es requerido.");
 
-            // Validar formato usando el método existente pero adaptado
             ValidateUserNameFormat(userName);
 
-            // Validar duplicación específica para actualización
             var existingUser = await _userManager.FindByNameAsync(userName);
             if (existingUser != null && existingUser.Id != currentUserId)
                 throw new ValidationException("El nombre de usuario ya está en uso por otro usuario.");
@@ -750,8 +820,18 @@ namespace PruebaViamaticaJustinMoreira.Services
                 string.IsNullOrWhiteSpace(updateDto.Email) &&
                 string.IsNullOrWhiteSpace(updateDto.Name))
             {
-                throw new ValidationException("Debe proporcionar al menos un campo para actualizar (UserName, Email o Name).");
+                throw new ValidationException("Debe proporcionar al menos un campo para actualizar (UserName, EmailOrUsername o Name).");
             }
+        }
+
+        private async Task<User?> FindUserByEmailOrUsernameAsync(string emailOrUsername)
+        {
+            var userByEmail = await _userManager.FindByEmailAsync(emailOrUsername);
+            if (userByEmail != null)
+                return userByEmail;
+
+            var userByUsername = await _userManager.FindByNameAsync(emailOrUsername);
+            return userByUsername;
         }
 
     }

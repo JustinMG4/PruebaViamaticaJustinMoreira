@@ -71,5 +71,40 @@ namespace PruebaViamaticaJustinMoreira.Controllers
                 $"Se encontraron {usersWithFailedAttempts.Count} usuarios con intentos fallidos"
             ));
         }
+
+        /// <summary>
+        /// Obtener el historial completo de sesiones de un usuario
+        /// </summary>
+        [HttpGet("history/{userId}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<ApiResponse<List<SessionHistoryDto>>>> GetUserSessionHistory(string userId)
+        {
+            _logger.LogInformation("Consultando historial de sesiones para usuario: {UserId}", userId);
+
+            var sessionHistory = await _sessionService.GetUserSessionHistoryAsync(userId);
+
+            return Ok(ApiResponse<List<SessionHistoryDto>>.SuccessResponse(
+                sessionHistory,
+                $"Historial de sesiones obtenido exitosamente. Total: {sessionHistory.Count} sesiones"
+            ));
+        }
+
+        /// <summary>
+        /// Obtener el historial de sesiones del usuario actual
+        /// </summary>
+        [HttpGet("my-history")]
+        [Authorize]
+        public async Task<ActionResult<ApiResponse<List<SessionHistoryDto>>>> GetMySessionHistory()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            _logger.LogInformation("Consultando historial de sesiones para usuario actual: {UserId}", userId);
+
+            var sessionHistory = await _sessionService.GetUserSessionHistoryAsync(userId);
+
+            return Ok(ApiResponse<List<SessionHistoryDto>>.SuccessResponse(
+                sessionHistory,
+                $"Historial de sesiones obtenido exitosamente. Total: {sessionHistory.Count} sesiones"
+            ));
+        }
     }
 }

@@ -1,8 +1,11 @@
 ﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using PruebaViamaticaJustinMoreira.DTOs;
+using PruebaViamaticaJustinMoreira.Exceptions;
 using PruebaViamaticaJustinMoreira.Interfaces;
 using PruebaViamaticaJustinMoreira.Models;
+using PruebaViamaticaJustinMoreira.Services;
 using System.Security.Claims;
 
 namespace PruebaViamaticaJustinMoreira.Controllers
@@ -11,13 +14,17 @@ namespace PruebaViamaticaJustinMoreira.Controllers
     [Route("api/[controller]")]
     public class AccountController : ControllerBase
     {
-        private readonly IAccountService _authService;
+        private readonly IAccountService _accountService;
         private readonly ILogger<AccountController> _logger;
+        private readonly UserManager<User> _userManager;
+        private readonly IWebHostEnvironment _env;
 
-        public AccountController(IAccountService authService, ILogger<AccountController> logger)
+        public AccountController(IAccountService authService, ILogger<AccountController> logger, UserManager<User> userManager, IWebHostEnvironment env)
         {
-            _authService = authService;
+            _accountService = authService;
             _logger = logger;
+            _userManager = userManager;
+            _env = env;
         }
 
         /// <summary>
@@ -26,13 +33,13 @@ namespace PruebaViamaticaJustinMoreira.Controllers
         [HttpPost("register")]
         public async Task<ActionResult<ApiResponse<object>>> Register([FromBody] RegisterDto registerDto)
         {
-            _logger.LogInformation("Iniciando registro de usuario: {Email}", registerDto.Email);
+            _logger.LogInformation("Iniciando registro de usuario: {EmailOrUsername}", registerDto.Email);
 
-            var result = await _authService.RegisterAsync(registerDto, "User");
+            var result = await _accountService.RegisterAsync(registerDto, "User");
 
             if (result.Succeeded)
             {
-                _logger.LogInformation("Usuario registrado exitosamente: {Email}", registerDto.Email);
+                _logger.LogInformation("Usuario registrado exitosamente: {EmailOrUsername}", registerDto.Email);
                 return Ok(ApiResponse<object>.SuccessResponse(
                     new { message = "Usuario registrado exitosamente" },
                     "Registro completado"
@@ -40,12 +47,34 @@ namespace PruebaViamaticaJustinMoreira.Controllers
             }
 
             var errors = result.Errors.Select(e => e.Description).ToList();
-            _logger.LogWarning("Error en registro de usuario {Email}: {Errors}", registerDto.Email, string.Join(", ", errors));
+            _logger.LogWarning("Error en registro de usuario {EmailOrUsername}: {Errors}", registerDto.Email, string.Join(", ", errors));
 
             return BadRequest(ApiResponse<object>.ErrorResponse(
                 "Error en el registro",
                 errors
             ));
+        }
+
+        [HttpPost("register-bulk")]
+        [Authorize(Roles = "Admin")] // <-- Asegura que solo los administradores puedan usarlo
+        public async Task<IActionResult> RegisterBulk([FromBody] List<RegisterDto> users)
+        {
+            if (users == null || !users.Any())
+            {
+                return BadRequest(new { Message = "La lista de usuarios no puede estar vacía." });
+            }
+
+            // Llama al nuevo método del servicio, asignando un rol por defecto a los usuarios cargados
+            var result = await _accountService.RegisterBulkAsync(users, "User");
+
+            if (result.FailedRegisters > 0 && result.SuccessfulRegisters == 0)
+            {
+                // Si todos fallaron, podría ser un 400 Bad Request
+                return BadRequest(result);
+            }
+
+            // Si algunos o todos tuvieron éxito, es un 200 OK con el resumen
+            return Ok(result);
         }
 
         /// <summary>
@@ -56,13 +85,13 @@ namespace PruebaViamaticaJustinMoreira.Controllers
 
         public async Task<ActionResult<ApiResponse<object>>> RegisterAdmin([FromBody] RegisterDto registerDto)
         {
-            _logger.LogInformation("Iniciando registro de Admin: {Email}", registerDto.Email);
+            _logger.LogInformation("Iniciando registro de Admin: {EmailOrUsername}", registerDto.Email);
 
-            var result = await _authService.RegisterAsync(registerDto, "Admin");
+            var result = await _accountService.RegisterAsync(registerDto, "Admin");
 
             if (result.Succeeded)
             {
-                _logger.LogInformation("Usuario Admin registrado exitosamente: {Email}", registerDto.Email);
+                _logger.LogInformation("Usuario Admin registrado exitosamente: {EmailOrUsername}", registerDto.Email);
                 return Ok(ApiResponse<object>.SuccessResponse(
                     new { message = "Usuario Administrador registrado exitosamente" },
                     "Registro completado"
@@ -70,7 +99,7 @@ namespace PruebaViamaticaJustinMoreira.Controllers
             }
 
             var errors = result.Errors.Select(e => e.Description).ToList();
-            _logger.LogWarning("Error en registro de usuario administrador {Email}: {Errors}", registerDto.Email, string.Join(", ", errors));
+            _logger.LogWarning("Error en registro de usuario administrador {EmailOrUsername}: {Errors}", registerDto.Email, string.Join(", ", errors));
 
             return BadRequest(ApiResponse<object>.ErrorResponse(
                 "Error en el registro",
@@ -84,11 +113,11 @@ namespace PruebaViamaticaJustinMoreira.Controllers
         [HttpPost("login")]
         public async Task<ActionResult<ApiResponse<object>>> Login([FromBody] LoginDto loginDto)
         {
-            _logger.LogInformation("Intento de login para usuario: {Email}", loginDto.Email);
+            _logger.LogInformation("Intento de login para usuario: {EmailOrUsername}", loginDto.EmailOrUsername);
 
-            var token = await _authService.LoginAsync(loginDto);
+            var token = await _accountService.LoginAsync(loginDto);
 
-            _logger.LogInformation("Login exitoso para usuario: {Email}", loginDto.Email);
+            _logger.LogInformation("Login exitoso para usuario: {EmailOrUsername}", loginDto.EmailOrUsername);
 
             return Ok(ApiResponse<object>.SuccessResponse(
                 new
@@ -112,7 +141,7 @@ namespace PruebaViamaticaJustinMoreira.Controllers
 
             _logger.LogInformation("Cerrando sesión para usuario: {UserId}", userId);
 
-            var result = await _authService.LogoutAsync(userId);
+            var result = await _accountService.LogoutAsync(userId);
 
             if (result)
             {
@@ -134,12 +163,12 @@ namespace PruebaViamaticaJustinMoreira.Controllers
         public async Task<IActionResult> GetCurrentUser()
         {
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            var user = await _authService.GetUserByIdAsync(userId);
+            var user = await _accountService.GetUserByIdAsync(userId);
 
             if (user == null)
                 return NotFound(ApiResponse<object>.ErrorResponse("Usuario no encontrado"));
 
-            var person = await _authService.GetPersonByUserIdAsync(userId);
+            var person = await _accountService.GetPersonByUserIdAsync(userId);
 
             if (person == null)
                 return NotFound(ApiResponse<object>.ErrorResponse("Información personal no encontrada"));
@@ -164,18 +193,18 @@ namespace PruebaViamaticaJustinMoreira.Controllers
         /// <summary>
         /// Verificar estado de bloqueo del usuario
         /// </summary>
-        [HttpGet("lockout-status/{email}")]
+        [HttpGet("lockout-status/{dto}")]
         public async Task<ActionResult<ApiResponse<object>>> GetLockoutStatus(string email)
         {
             // Este endpoint es útil para mostrar información de bloqueo sin autenticar
-            var user = await _authService.GetUserByEmailAsync(email);
+            var user = await _accountService.GetUserByEmailAsync(email);
 
             if (user == null)
                 return NotFound(ApiResponse<object>.ErrorResponse("Usuario no encontrado"));
 
-            var isLockedOut = await _authService.IsUserLockedOutAsync(user.Id);
-            var lockoutEnd = await _authService.GetLockoutEndAsync(user.Id);
-            var failedAttempts = await _authService.GetFailedAttemptsAsync(user.Id);
+            var isLockedOut = await _accountService.IsUserLockedOutAsync(user.Id);
+            var lockoutEnd = await _accountService.GetLockoutEndAsync(user.Id);
+            var failedAttempts = await _accountService.GetFailedAttemptsAsync(user.Id);
 
             var lockoutInfo = new
             {
@@ -198,7 +227,7 @@ namespace PruebaViamaticaJustinMoreira.Controllers
             var adminId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             _logger.LogInformation("Admin {AdminId} desbloqueando usuario {UserId}", adminId, userId);
 
-            var result = await _authService.UnlockUserAsync(userId);
+            var result = await _accountService.UnlockUserAsync(userId);
 
             if (result)
             {
@@ -211,18 +240,41 @@ namespace PruebaViamaticaJustinMoreira.Controllers
 
             return BadRequest(ApiResponse<object>.ErrorResponse("Error al desbloquear usuario"));
         }
+        /// <summary>
+        /// Endpoint para que administradores desbloqueen usuarios
+        /// </summary>
+        [HttpPost("lock-user/{userId}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<ApiResponse<object>>> LockUser(string userId)
+        {
+            var adminId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            _logger.LogInformation("Admin {AdminId} desbloqueando usuario {UserId}", adminId, userId);
+
+            var result = await _accountService.LockedAccountAsync(userId,15);
+
+            if (result)
+            {
+                _logger.LogInformation("Usuario {UserId} bloqueado exitosamente por admin {AdminId}", userId, adminId);
+                return Ok(ApiResponse<object>.SuccessResponse(
+                    new { message = "Usuario bloqueado exitosamente" },
+                    "Bloqueo exitoso"
+                ));
+            }
+
+            return BadRequest(ApiResponse<object>.ErrorResponse("Error al bloquear usuario"));
+        }
 
         /// <summary>
         /// Solicitar restablecimiento de contraseña
         /// </summary>
         [HttpPost("forgot-password")]
-        public async Task<ActionResult<ApiResponse<string>>> ForgotPassword([FromBody] string email)
+        public async Task<ActionResult<ApiResponse<string>>> ForgotPassword([FromBody] ForgotPasswordDto dto)
         {
-            _logger.LogInformation("Solicitud de restablecimiento de contraseña para: {Email}", email);
+            _logger.LogInformation("Solicitud de restablecimiento de contraseña para: {EmailOrUsername}", dto.email);
 
-            var result = await _authService.ForgotPassword(email);
+            var result = await _accountService.ForgotPassword(dto);
 
-            _logger.LogInformation("Enlace de restablecimiento enviado para: {Email}", email);
+            _logger.LogInformation("Enlace de restablecimiento enviado para: {EmailOrUsername}", dto.email);
 
             return Ok(result);
         }
@@ -233,11 +285,11 @@ namespace PruebaViamaticaJustinMoreira.Controllers
         [HttpPost("reset-password")]
         public async Task<ActionResult<ApiResponse<string>>> ResetPassword([FromBody] ResetPassword request)
         {
-            _logger.LogInformation("Restablecimiento de contraseña para: {Email}", request.Email);
+            _logger.LogInformation("Restablecimiento de contraseña para: {EmailOrUsername}", request.Email);
 
-            var result = await _authService.ResetPassword(request);
+            var result = await _accountService.ResetPassword(request);
 
-            _logger.LogInformation("Contraseña restablecida exitosamente para: {Email}", request.Email);
+            _logger.LogInformation("Contraseña restablecida exitosamente para: {EmailOrUsername}", request.Email);
 
             return Ok(result);
         }
@@ -253,7 +305,7 @@ namespace PruebaViamaticaJustinMoreira.Controllers
             
             _logger.LogInformation("Usuario {CurrentUserId} actualizando información de usuario {UserId}", userId, userId);
 
-            var result = await _authService.UpdateUserAsync(userId, updateDto);
+            var result = await _accountService.UpdateUserAsync(userId, updateDto);
 
             _logger.LogInformation("Usuario {UserId} actualizado exitosamente", userId);
 
@@ -265,16 +317,56 @@ namespace PruebaViamaticaJustinMoreira.Controllers
         /// </summary>
         [HttpPut("update")]
         [Authorize(Roles = "Admin")]
-        public async Task<ActionResult<ApiResponse<object>>> UpdateUsers(string userId,[FromBody] UpdateUserDto updateDto)
+        public async Task<ActionResult<ApiResponse<object>>> UpdateUsers(string userId, [FromBody] UpdateUserDto updateDto)
         {
-            
+            // Verificar si el usuario es administrador
+            var user = await _userManager.FindByIdAsync(userId);
+            if (user == null)
+            {
+                return NotFound(ApiResponse<object>.ErrorResponse("Usuario no encontrado"));
+            }
+
+            var roles = await _userManager.GetRolesAsync(user);
+            if (roles.Contains("Admin"))
+            {
+                return BadRequest(new BusinessException("No puede modificar los datos de otro administrador"));
+            }
+
             _logger.LogInformation("Usuario {CurrentUserId} actualizando información de usuario {UserId}", userId, userId);
 
-            var result = await _authService.UpdateUserAsync(userId, updateDto);
+            var result = await _accountService.UpdateUserAsync(userId, updateDto);
 
             _logger.LogInformation("Usuario {UserId} actualizado exitosamente", userId);
 
             return Ok(result);
+        }
+
+        [HttpPost("ResetPassword")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ResetPassword([FromForm] ResetPassword request, [FromForm] string confirmPassword)
+        {
+            if (request.Password != confirmPassword)
+                return BadRequest("Las contraseñas no coinciden.");
+
+            return Ok(await _accountService.ResetPassword(request));
+        }
+
+        [HttpGet("ResetPasswordForm")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ResetPasswordForm([FromQuery] string email, [FromQuery] string token)
+        {
+            string path = Path.Combine(_env.ContentRootPath, "Templates", "ResetPasswordForm.html");
+            _logger.LogInformation(path);
+            if (!System.IO.File.Exists(path))
+                return NotFound("Plantilla no encontrada.");
+
+            string htmlContent = await System.IO.File.ReadAllTextAsync(path);
+
+            htmlContent = htmlContent
+                .Replace("{{dto}}", email)
+                .Replace("{{token}}", token);
+
+            return Content(htmlContent, "text/html");
         }
     }
 }

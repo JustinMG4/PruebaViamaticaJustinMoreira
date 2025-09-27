@@ -8,6 +8,7 @@ namespace PruebaViamaticaJustinMoreira.Interfaces
         Task<SessionStatsDto> GetSessionStatisticsAsync();
         Task<UserSessionStats> GetLastActiveSessionAsync(string userId);
         Task<List<UserFailedAttemptsDto>> GetUsersWithFailedAttemptsAsync();
+        Task<List<SessionHistoryDto>> GetUserSessionHistoryAsync(string userId);
 
     }
 }
